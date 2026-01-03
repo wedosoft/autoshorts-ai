@@ -6,41 +6,16 @@ const getAI = () => {
   return new GoogleGenAI({ apiKey: process.env.API_KEY });
 };
 
-// 1. Generate Script (Storyboard with 5 scenes and AUTHORITATIVE character consistency)
+// 1. Generate Script
 export const generateScript = async (topic: string, stylePreference: string): Promise<ScriptData> => {
   const ai = getAI();
-  
-  const prompt = `Create a high-quality 35-second YouTube Short storyboard about: "${topic}".
-  
-  CRITICAL INSTRUCTION FOR CHARACTER CONSISTENCY:
-  1. Define a "Visual Identity Anchor" for the protagonist. This MUST include: 
-     - Specific Ethnicity (e.g., "Korean", "African", "Hispanic", etc.)
-     - Specific Age, hair color/style, facial features, and a fixed outfit.
-  2. Define a "Setting Anchor" (e.g., "A modern neon-lit cafe in Tokyo" or "A sunlit Mediterranean balcony").
-  3. Every single "visualPrompt" in the JSON output MUST start with this exact identity anchor and setting anchor. 
-  4. DO NOT use pronouns like "she" or "the man" alone; repeat the physical descriptors in every scene.
-  
-  SCENE COUNT: Exactly 5 scenes.
-  
-  STYLE ENFORCEMENT: The user selected: "${stylePreference}".
-  - The "globalStyle" field should be technical English description (camera, lighting, film type).
-  - If "Realistic" is chosen, focus on: "photorealistic, raw photo, fujifilm, 8k, natural skin texture, no smoothing".
-  
-  Output JSON format:
-  {
-    "title": "Korean Title",
-    "globalStyle": "Technical visual style guide in English.",
-    "scenes": [
-      { 
-        "visualPrompt": "MANDATORY STRUCTURE: [Full Character Description] + [Full Setting Description] + [Specific Action of this scene]. (English)",
-        "narration": "Korean narration (해요체)."
-      }
-    ]
-  }
-  `;
+  const prompt = `Create a high-quality 25-second YouTube Short storyboard about: "${topic}".
+  CRITICAL: Define a consistent character and setting. Every visualPrompt must repeat physical descriptions (ethnicity, age, outfit) and the setting to ensure consistency.
+  STYLE: ${stylePreference}.
+  Output exactly 5 scenes in JSON.`;
 
   const response = await ai.models.generateContent({
-    model: "gemini-3-pro-preview", // Use Pro for superior reasoning on cross-scene consistency
+    model: "gemini-3-flash-preview",
     contents: prompt,
     config: {
       responseMimeType: "application/json",
@@ -68,43 +43,56 @@ export const generateScript = async (topic: string, stylePreference: string): Pr
     },
   });
 
-  try {
-    const data = JSON.parse(response.text.replace(/```json/g, '').replace(/```/g, '').trim());
-    // Verification: ensure we have exactly 5 scenes
-    data.scenes = data.scenes.slice(0, 5);
-    return data as ScriptData;
-  } catch (e) {
-    throw new Error("스크립트 일관성 생성 엔진에 오류가 발생했습니다. 다시 시도해주세요.");
-  }
+  return JSON.parse(response.text) as ScriptData;
 };
 
-// 2. Generate Image with Style & Anchored Content
+// 2. Generate Image (Base for Video)
 export const generateSceneImage = async (stylePrompt: string, scenePrompt: string): Promise<string> => {
   const ai = getAI();
-  
-  // Construct a prompt that places style first, then the anchored character/setting/action
-  const fullPrompt = `[VISUAL STYLE: ${stylePrompt}]. [SCENE CONTENT: ${scenePrompt}]. 
-  Aspect Ratio 9:16. Cinematic lighting, ultra-high resolution, masterpiece quality.
-  STRICT ADHERENCE: If the style is REALISTIC, you MUST produce a PHOTOGRAPH. No illustration, no painting, no 3D render look. 
-  Consistency check: Ensure the face and environment perfectly match the provided description.`;
+  const fullPrompt = `${stylePrompt}, ${scenePrompt}. 9:16 vertical aspect ratio. High quality.`;
   
   const response = await ai.models.generateContent({
     model: 'gemini-2.5-flash-image',
     contents: { parts: [{ text: fullPrompt }] },
-    config: { 
-        imageConfig: { 
-            aspectRatio: "9:16" 
-        } 
-    }
+    config: { imageConfig: { aspectRatio: "9:16" } }
   });
 
   for (const part of response.candidates?.[0]?.content?.parts || []) {
     if (part.inlineData) return part.inlineData.data;
   }
-  throw new Error("이미지 생성 단계에서 오류가 발생했습니다.");
+  throw new Error("이미지 생성 실패");
 };
 
-// 3. Generate Audio Narration
+// 3. Generate Video using Veo (Image-to-Video)
+export const generateSceneVideo = async (base64Image: string, prompt: string): Promise<string> => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY }); // 최신 키 반영을 위해 새로 생성
+  
+  let operation = await ai.models.generateVideos({
+    model: 'veo-3.1-fast-generate-preview',
+    prompt: `Cinematic motion, ${prompt}`,
+    image: {
+      imageBytes: base64Image,
+      mimeType: 'image/png',
+    },
+    config: {
+      numberOfVideos: 1,
+      resolution: '720p',
+      aspectRatio: '9:16'
+    }
+  });
+
+  while (!operation.done) {
+    await new Promise(resolve => setTimeout(resolve, 5000));
+    operation = await ai.operations.getVideosOperation({ operation: operation });
+  }
+
+  const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
+  if (!downloadLink) throw new Error("비디오 생성 실패");
+  
+  return `${downloadLink}&key=${process.env.API_KEY}`;
+};
+
+// 4. Generate Audio
 export const generateNarrationAudio = async (text: string): Promise<AudioBuffer> => {
   const ai = getAI();
   const response = await ai.models.generateContent({
@@ -112,11 +100,7 @@ export const generateNarrationAudio = async (text: string): Promise<AudioBuffer>
     contents: [{ parts: [{ text }] }],
     config: {
       responseModalities: [Modality.AUDIO],
-      speechConfig: { 
-          voiceConfig: { 
-              prebuiltVoiceConfig: { voiceName: 'Kore' } 
-          } 
-      },
+      speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
     },
   });
 

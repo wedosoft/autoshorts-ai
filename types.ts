@@ -1,9 +1,9 @@
+
 import { ReactNode } from 'react';
 
 export enum AppState {
   IDLE = 'IDLE',
   GENERATING_SCRIPT = 'GENERATING_SCRIPT',
-  REVIEW_SCRIPT = 'REVIEW_SCRIPT',
   GENERATING_IMAGE = 'GENERATING_IMAGE',
   GENERATING_VIDEO = 'GENERATING_VIDEO',
   GENERATING_AUDIO = 'GENERATING_AUDIO',
@@ -18,13 +18,14 @@ export interface Scene {
 
 export interface ScriptData {
   title: string;
-  globalStyle: string; // Describes the consistent character/setting style
+  globalStyle: string;
   scenes: Scene[];
 }
 
 export interface GeneratedAssets {
   script: ScriptData | null;
-  videoUrls: string[]; // Changed from single videoUrl to array
+  imageUrls: string[];
+  videoUrls: string[];
   audioBuffer: AudioBuffer | null;
 }
 
@@ -35,7 +36,6 @@ export interface StepProps {
   icon: ReactNode;
 }
 
-// Global declaration for the AI Studio key selection
 declare global {
   interface AIStudio {
     hasSelectedApiKey: () => Promise<boolean>;

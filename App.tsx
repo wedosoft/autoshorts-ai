@@ -4,56 +4,19 @@ import { AppState, GeneratedAssets, ScriptData } from './types';
 import * as gemini from './services/geminiService';
 import { StepIndicator } from './components/StepIndicator';
 import { Player } from './components/Player';
-import { Wand2, FileText, Image as ImageIcon, Mic, AlertCircle, RefreshCcw, Camera, Sparkles, Ghost, PenTool, Brush, Waves } from 'lucide-react';
+import { Wand2, FileText, Image as ImageIcon, Mic, AlertCircle, Camera, Sparkles, Waves, Video } from 'lucide-react';
 
 const VISUAL_STYLES = [
-  { 
-    id: 'realistic', 
-    label: '실사 (Realistic)', 
-    icon: <Camera size={18} />, 
-    prompt: 'High-end commercial photography, realistic RAW photo, cinematic lighting, 8k resolution, shot on 35mm f/1.8 lens. Deep focus, realistic skin texture and natural lighting. ABSOLUTELY NO ARTISTIC EFFECTS, NO PAINTING, NO ILLUSTRATION. 100% REAL PHOTOGRAPH.' 
-  },
-  { 
-    id: 'anime', 
-    label: '애니메이션 (Anime)', 
-    icon: <Sparkles size={18} />, 
-    prompt: 'Premium modern Japanese anime style, Makoto Shinkai and CoMix Wave inspired, clean cel-shading, vibrant atmospheric lighting, high-fidelity background details.' 
-  },
-  { 
-    id: '3d_cartoon', 
-    label: '3D 툰 (Pixar)', 
-    icon: <Ghost size={18} />, 
-    prompt: 'High-end 3D movie animation style, Pixar/Disney aesthetic, subsurface scattering on skin, soft studio lighting, Octane Render quality, expressive character shapes.' 
-  },
-  { 
-    id: 'cyberpunk', 
-    label: '사이버펑크 (Neon)', 
-    icon: <Wand2 size={18} />, 
-    prompt: 'Cyberpunk 2077 cinematic aesthetic, volumetric neon lighting, rainy futuristic city, high contrast purple and cyan palette, film grain, sci-fi atmosphere.' 
-  },
-  { 
-    id: 'oil_painting', 
-    label: '유화 (Oil Paint)', 
-    icon: <Brush size={18} />, 
-    prompt: 'Classic thick oil painting on textured canvas, heavy impasto strokes, rich pigment textures, dramatic chiaroscuro lighting, museum fine art quality.' 
-  },
-  { 
-    id: 'sketch', 
-    label: '스케치 (Sketch)', 
-    icon: <PenTool size={18} />, 
-    prompt: 'Artistic charcoal and graphite pencil drawing, textured paper, realistic sketching technique, masterfully shaded, monochrome graphite aesthetic.' 
-  },
+  { id: 'realistic', label: 'Cinematic Realism', icon: <Camera size={18} />, prompt: 'Hyper-realistic, 8k, cinematic film stock, sharp focus.' },
+  { id: 'anime', label: 'Makoto Shinkai Style', icon: <Sparkles size={18} />, prompt: 'Breathtaking anime scenery, emotional lighting, vibrant clouds.' },
+  { id: 'cyber', label: 'Neon Cyberpunk', icon: <Wand2 size={18} />, prompt: 'Futuristic, neon-drenched streets, volumetric fog, rainy night.' },
 ];
 
 export default function App() {
   const [state, setState] = useState<AppState>(AppState.IDLE);
   const [topic, setTopic] = useState('');
   const [selectedStyle, setSelectedStyle] = useState(VISUAL_STYLES[0].id);
-  const [assets, setAssets] = useState<GeneratedAssets>({
-    script: null,
-    videoUrls: [],
-    audioBuffer: null
-  });
+  const [assets, setAssets] = useState<GeneratedAssets>({ script: null, imageUrls: [], videoUrls: [], audioBuffer: null });
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState<{current: number, total: number} | null>(null);
 
@@ -69,36 +32,66 @@ export default function App() {
 
   const handleGenerate = useCallback(async () => {
     if (!topic.trim()) return;
+    
+    if (window.aistudio) {
+      const hasKey = await window.aistudio.hasSelectedApiKey();
+      if (!hasKey) {
+        await window.aistudio.openSelectKey();
+        return; 
+      }
+    }
+
     setError(null);
     const styleObj = VISUAL_STYLES.find(s => s.id === selectedStyle) || VISUAL_STYLES[0];
     
     try {
-      // 1. Script Generation with Character Consistency logic
+      // 1. Script
       setState(AppState.GENERATING_SCRIPT);
       const scriptData = await gemini.generateScript(topic, styleObj.prompt);
       setAssets(prev => ({ ...prev, script: scriptData }));
       
-      const sceneCount = 5; 
-      const imageUrls: string[] = [];
-      setProgress({ current: 0, total: sceneCount });
+      const sceneCount = 5;
+      const images: string[] = [];
+      const videos: string[] = [];
 
-      // 2. Image Generation (5 Scenes) - Character descriptions are now embedded in each scene prompt
+      // 2. Images (Pre-generate all images for fallback)
       setState(AppState.GENERATING_IMAGE);
+      setProgress({ current: 0, total: sceneCount });
       for (let i = 0; i < sceneCount; i++) {
-        setProgress({ current: i + 1, total: sceneCount });
         const base64Img = await gemini.generateSceneImage(scriptData.globalStyle, scriptData.scenes[i].visualPrompt);
-        imageUrls.push(`data:image/png;base64,${base64Img}`);
-        setAssets(prev => ({ ...prev, videoUrls: [...imageUrls] }));
+        images.push(base64Img);
+        setProgress({ current: i + 1, total: sceneCount });
+      }
+      setAssets(prev => ({ ...prev, imageUrls: images }));
+
+      // 3. Videos (Veo) - Sequential with fallback for 429 errors
+      setState(AppState.GENERATING_VIDEO);
+      setProgress({ current: 0, total: sceneCount });
+      for (let i = 0; i < sceneCount; i++) {
+        try {
+          // Add a small delay between requests to mitigate 429
+          if (i > 0) await new Promise(r => setTimeout(r, 3000));
+          
+          const videoUrl = await gemini.generateSceneVideo(images[i], scriptData.scenes[i].visualPrompt);
+          videos.push(videoUrl);
+        } catch (err) {
+          console.warn(`Video generation failed for scene ${i+1}. Falling back to image.`, err);
+          // Fallback: Use the data URL of the image as the "video" source
+          videos.push(`data:image/png;base64,${images[i]}`);
+        }
+        setProgress({ current: i + 1, total: sceneCount });
+        setAssets(prev => ({ ...prev, videoUrls: [...videos] }));
       }
 
-      // 3. Narration Generation
+      // 4. Audio
       setState(AppState.GENERATING_AUDIO);
       const audioBuffer = await gemini.generateNarrationAudio(scriptData.scenes.map(s => s.narration).join(' '));
       
-      setAssets(prev => ({ ...prev, videoUrls: imageUrls, audioBuffer }));
+      setAssets(prev => ({ ...prev, audioBuffer }));
       setState(AppState.COMPLETED);
     } catch (err: any) {
-      setError(err.message || "생성 중 오류가 발생했습니다.");
+      console.error(err);
+      setError(err.message || "생성 중 예상치 못한 오류가 발생했습니다.");
       setState(AppState.ERROR);
     }
   }, [topic, selectedStyle]);
@@ -106,92 +99,121 @@ export default function App() {
   const resetApp = () => {
     setState(AppState.IDLE);
     setTopic('');
-    setAssets({ script: null, videoUrls: [], audioBuffer: null });
+    setAssets({ script: null, imageUrls: [], videoUrls: [], audioBuffer: null });
     setError(null);
   };
 
   return (
-    <div className="min-h-screen flex flex-col items-center py-12 px-4 font-sans">
-      <div className="text-center mb-16 space-y-4 animate-fade-in">
-        <div className="inline-flex items-center justify-center p-4 rounded-3xl bg-white/10 border border-white/20 shadow-xl mb-4">
-          <Waves className="w-10 h-10 text-cyan-400 animate-pulse" />
+    <div className="min-h-screen flex flex-col items-center py-12 px-4 font-sans selection:bg-cyan-500/30">
+      {state === AppState.IDLE && (
+        <div className="text-center mb-16 space-y-6 animate-fade-in">
+          <div className="inline-flex p-5 rounded-[2rem] bg-gradient-to-br from-cyan-500/20 to-blue-600/20 border border-white/20 shadow-2xl backdrop-blur-xl mb-4">
+            <Waves className="w-12 h-12 text-cyan-400 animate-pulse" />
+          </div>
+          <h1 className="text-6xl md:text-8xl font-black tracking-tighter bg-clip-text text-transparent bg-gradient-to-b from-white via-white to-cyan-500 uppercase">
+            AutoShorts AI
+          </h1>
+          <p className="text-cyan-100/60 text-lg md:text-2xl max-w-xl mx-auto leading-relaxed font-light">
+            상상 속의 이야기를 <span className="text-cyan-400 font-bold">생동감 넘치는 비디오</span>로 만듭니다.
+          </p>
         </div>
-        <h1 className="text-5xl md:text-7xl font-black tracking-tight bg-clip-text text-transparent bg-gradient-to-b from-white to-cyan-500 uppercase">
-          AutoShorts AI
-        </h1>
-        <p className="text-cyan-100/60 text-lg md:text-xl max-w-lg mx-auto word-keep-all leading-relaxed">
-          인물과 배경의 일관성을 유지하는 <b>하이브리드 엔진</b>이 탑재되었습니다.<br/>
-          5개의 장면으로 끊김 없는 이야기를 완성하세요.
-        </p>
-      </div>
+      )}
 
       <div className="w-full max-w-5xl flex flex-col items-center">
-        {state !== AppState.IDLE && state !== AppState.ERROR && (
+        {state !== AppState.IDLE && state !== AppState.COMPLETED && state !== AppState.ERROR && (
            <StepIndicator steps={[
-             { title: '스토리 기획', icon: <FileText size={18}/>, isActive: state === AppState.GENERATING_SCRIPT, isCompleted: state !== AppState.GENERATING_SCRIPT },
-             { title: '이미지 렌더링', icon: <ImageIcon size={18}/>, isActive: state === AppState.GENERATING_IMAGE, isCompleted: ![AppState.GENERATING_SCRIPT, AppState.GENERATING_IMAGE].includes(state) },
-             { title: '나레이션', icon: <Mic size={18}/>, isActive: state === AppState.GENERATING_AUDIO, isCompleted: state === AppState.COMPLETED },
+             { title: 'Script', icon: <FileText size={18}/>, isActive: state === AppState.GENERATING_SCRIPT, isCompleted: state !== AppState.GENERATING_SCRIPT },
+             { title: 'Imagery', icon: <ImageIcon size={18}/>, isActive: state === AppState.GENERATING_IMAGE, isCompleted: ![AppState.GENERATING_SCRIPT, AppState.GENERATING_IMAGE].includes(state) },
+             { title: 'AI Video', icon: <Video size={18}/>, isActive: state === AppState.GENERATING_VIDEO, isCompleted: ![AppState.GENERATING_SCRIPT, AppState.GENERATING_IMAGE, AppState.GENERATING_VIDEO].includes(state) },
+             { title: 'Narration', icon: <Mic size={18}/>, isActive: state === AppState.GENERATING_AUDIO, isCompleted: state === AppState.COMPLETED },
            ]} />
         )}
 
         {state === AppState.IDLE && (
-          <div className="w-full max-w-2xl animate-fade-in-up space-y-12">
+          <div className="w-full max-w-2xl space-y-12 animate-fade-in-up">
             <div className="relative group">
-              <div className="absolute -inset-1 bg-gradient-to-r from-cyan-400 to-blue-600 rounded-2xl blur opacity-30 group-hover:opacity-60 transition duration-500"></div>
-              <div className="relative bg-white/10 border border-white/20 rounded-2xl p-1.5 flex items-center shadow-2xl backdrop-blur-md">
+              <div className="absolute -inset-1 bg-gradient-to-r from-cyan-400 to-blue-600 rounded-3xl blur opacity-25 group-hover:opacity-50 transition duration-1000"></div>
+              <div className="relative bg-black/40 border border-white/10 rounded-3xl p-2 flex items-center backdrop-blur-3xl">
                 <input
                   type="text"
                   value={topic}
                   onChange={(e) => setTopic(e.target.value)}
-                  placeholder="무엇에 대한 영상을 만들까요? (예: 파리의 아침을 걷는 소녀)"
-                  className="flex-1 bg-transparent border-none text-white px-6 py-4 focus:ring-0 placeholder-cyan-200/40 text-lg outline-none"
+                  placeholder="무엇을 만들고 싶나요? (예: 사이버펑크 도시의 추격전)"
+                  className="flex-1 bg-transparent border-none text-white px-6 py-5 focus:ring-0 placeholder-white/20 text-xl outline-none"
                   onKeyDown={(e) => e.key === 'Enter' && handleGenerate()}
                 />
                 <button
                   onClick={handleGenerate}
                   disabled={!topic.trim()}
-                  className="bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white px-8 py-4 rounded-xl font-bold transition-all disabled:opacity-30"
+                  className="bg-gradient-to-r from-cyan-500 to-blue-600 hover:scale-105 text-white px-10 py-5 rounded-2xl font-black transition-all disabled:opacity-30 shadow-lg uppercase tracking-wider"
                 >
-                  제작 시작
+                  Create
                 </button>
               </div>
             </div>
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+            
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 {VISUAL_STYLES.map((style) => (
                   <button
                     key={style.id}
                     onClick={() => setSelectedStyle(style.id)}
-                    className={`p-5 rounded-2xl border transition-all text-left space-y-3 backdrop-blur-sm ${selectedStyle === style.id ? 'bg-white/20 border-cyan-400 ring-2 ring-cyan-400/50 shadow-lg' : 'bg-white/5 border-white/10 text-cyan-200/50 hover:bg-white/10'}`}
+                    className={`p-6 rounded-3xl border transition-all text-left space-y-4 backdrop-blur-xl group ${selectedStyle === style.id ? 'bg-cyan-500/20 border-cyan-400 shadow-[0_0_30px_rgba(6,182,212,0.3)]' : 'bg-white/5 border-white/10 text-white/40 hover:bg-white/10'}`}
                   >
-                    <div className={`p-3 rounded-xl inline-flex ${selectedStyle === style.id ? 'bg-cyan-500 text-white' : 'bg-white/10'}`}>{style.icon}</div>
-                    <div className="font-bold">{style.label}</div>
+                    <div className={`p-4 rounded-2xl inline-flex transition-colors ${selectedStyle === style.id ? 'bg-cyan-500 text-white shadow-lg' : 'bg-white/5 group-hover:text-white'}`}>{style.icon}</div>
+                    <div className="font-black text-sm uppercase tracking-widest">{style.label}</div>
                   </button>
                 ))}
             </div>
           </div>
         )}
 
-        {(state !== AppState.IDLE && state !== AppState.COMPLETED && state !== AppState.ERROR) && (
-            <div className="mt-20 text-center space-y-8 animate-pulse">
-                <div className="w-24 h-24 border-4 border-cyan-500/20 border-t-cyan-500 rounded-full animate-spin mx-auto"></div>
+        {state !== AppState.IDLE && state !== AppState.COMPLETED && state !== AppState.ERROR && (
+            <div className="mt-20 text-center space-y-10 animate-fade-in">
+                <div className="relative inline-block">
+                    <div className="w-32 h-32 border-2 border-cyan-500/20 border-t-cyan-500 rounded-full animate-spin"></div>
+                    <div className="absolute inset-0 flex items-center justify-center">
+                        <Waves className="text-cyan-400 animate-pulse" size={32} />
+                    </div>
+                </div>
                 <div className="space-y-4">
-                    <div className="text-3xl font-light text-white uppercase tracking-widest">{state.replace('_', ' ')}...</div>
-                    {progress && <div className="text-cyan-400 font-black text-6xl">{progress.current} / {progress.total}</div>}
-                    <p className="text-xs text-white/40 mt-4">인물의 일관성을 유지하기 위해 정밀 연산을 수행 중입니다.</p>
+                    <h3 className="text-4xl font-black text-white uppercase tracking-[0.3em]">
+                        {state === AppState.GENERATING_SCRIPT ? 'Plotting' : 
+                         state === AppState.GENERATING_IMAGE ? 'Dreaming' : 
+                         state === AppState.GENERATING_VIDEO ? 'Rendering AI Video' : 'Synthesizing'}
+                    </h3>
+                    <p className="text-cyan-400/60 font-medium italic">
+                      {state === AppState.GENERATING_VIDEO ? "Veo 모델이 장면을 렌더링 중입니다. (지연 시 이미지가 대신 사용됩니다)" : "잠시만 기다려주세요..."}
+                    </p>
+                    {progress && (
+                      <div className="flex flex-col items-center gap-2">
+                        <div className="text-7xl font-black text-cyan-400 tracking-tighter">{progress.current} <span className="text-2xl text-white/20">/ {progress.total}</span></div>
+                        <div className="w-64 h-1 bg-white/5 rounded-full overflow-hidden">
+                           <div 
+                             className="h-full bg-cyan-500 transition-all duration-1000" 
+                             style={{ width: `${(progress.current / progress.total) * 100}%` }}
+                           ></div>
+                        </div>
+                      </div>
+                    )}
                 </div>
             </div>
         )}
 
         {state === AppState.COMPLETED && (
-            <Player videoUrls={assets.videoUrls} audioBuffer={assets.audioBuffer} script={assets.script?.scenes.map(s => s.narration).join('\n\n') || ''} onReset={resetApp} />
+            <Player 
+              videoUrls={assets.videoUrls} 
+              audioBuffer={assets.audioBuffer} 
+              script={assets.script?.scenes.map(s => s.narration).join('\n\n') || ''} 
+              onReset={resetApp} 
+            />
         )}
 
         {state === AppState.ERROR && (
-            <div className="mt-8 p-10 bg-white/5 border border-red-500/30 rounded-3xl max-w-md w-full text-center shadow-2xl">
-                <AlertCircle className="w-16 h-16 text-red-400 mx-auto mb-6" />
-                <h3 className="text-2xl font-bold text-white mb-3">생성 실패</h3>
-                <p className="text-cyan-100/60 mb-8 text-sm">{error}</p>
-                <button onClick={handleGenerate} className="w-full px-6 py-4 bg-cyan-600 hover:bg-cyan-500 text-white rounded-xl font-bold transition-all">다시 시도</button>
+            <div className="mt-8 p-12 bg-white/5 border border-red-500/30 rounded-[3rem] max-w-md w-full text-center shadow-2xl animate-fade-in backdrop-blur-3xl">
+                <AlertCircle className="w-20 h-20 text-red-500 mx-auto mb-8 animate-bounce" />
+                <h3 className="text-3xl font-black text-white mb-4 uppercase tracking-tighter">System Error</h3>
+                <p className="text-red-200/60 mb-10 text-sm leading-relaxed">{error}</p>
+                <button onClick={resetApp} className="w-full px-8 py-5 bg-white/10 hover:bg-white/20 text-white rounded-2xl font-bold transition-all border border-white/10 uppercase tracking-widest">Restart System</button>
             </div>
         )}
       </div>
