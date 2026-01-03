@@ -2,41 +2,45 @@
 import { GoogleGenAI, Type, Modality } from "@google/genai";
 import { ScriptData, Scene } from "../types";
 
-// Helper to get a fresh AI instance with the current key
 const getAI = () => {
   return new GoogleGenAI({ apiKey: process.env.API_KEY });
 };
 
-// 1. Generate Script (Storyboard with exactly 5 scenes)
+// 1. Generate Script (Storyboard with 5 scenes and AUTHORITATIVE character consistency)
 export const generateScript = async (topic: string, stylePreference: string): Promise<ScriptData> => {
   const ai = getAI();
   
-  const prompt = `Create a 40-second high-quality YouTube Short storyboard about: "${topic}".
-  CRITICAL: You MUST provide exactly 5 distinct scenes. Not 3, not 4. Exactly 5.
-  The story must be consistent, featuring the same main character or setting across all 5 scenes.
+  const prompt = `Create a high-quality 35-second YouTube Short storyboard about: "${topic}".
   
-  STYLE ENFORCEMENT: 
-  The user has selected the following style: "${stylePreference}".
-  You MUST describe the "globalStyle" in English so that an image generator can STRICTLY follow it.
-  If the style is "Realistic/Photographic", emphasize camera settings (35mm, f/1.8), real human skin textures, and natural lighting. 
-  DO NOT allow any artistic, illustrative, or painterly descriptions if "Realistic" is chosen.
+  CRITICAL INSTRUCTION FOR CHARACTER CONSISTENCY:
+  1. Define a "Visual Identity Anchor" for the protagonist. This MUST include: 
+     - Specific Ethnicity (e.g., "Korean", "African", "Hispanic", etc.)
+     - Specific Age, hair color/style, facial features, and a fixed outfit.
+  2. Define a "Setting Anchor" (e.g., "A modern neon-lit cafe in Tokyo" or "A sunlit Mediterranean balcony").
+  3. Every single "visualPrompt" in the JSON output MUST start with this exact identity anchor and setting anchor. 
+  4. DO NOT use pronouns like "she" or "the man" alone; repeat the physical descriptors in every scene.
+  
+  SCENE COUNT: Exactly 5 scenes.
+  
+  STYLE ENFORCEMENT: The user selected: "${stylePreference}".
+  - The "globalStyle" field should be technical English description (camera, lighting, film type).
+  - If "Realistic" is chosen, focus on: "photorealistic, raw photo, fujifilm, 8k, natural skin texture, no smoothing".
   
   Output JSON format:
   {
     "title": "Korean Title",
-    "globalStyle": "Detailed, technical description of the art style. Be extremely specific about textures, lighting, and medium. (English)",
+    "globalStyle": "Technical visual style guide in English.",
     "scenes": [
       { 
-        "visualPrompt": "Detailed visual description for scene 1. Focus on action and composition. (English).",
+        "visualPrompt": "MANDATORY STRUCTURE: [Full Character Description] + [Full Setting Description] + [Specific Action of this scene]. (English)",
         "narration": "Korean narration (해요체)."
-      },
-      ... repeat for exactly 5 scenes ...
+      }
     ]
   }
   `;
 
   const response = await ai.models.generateContent({
-    model: "gemini-3-flash-preview",
+    model: "gemini-3-pro-preview", // Use Pro for superior reasoning on cross-scene consistency
     contents: prompt,
     config: {
       responseMimeType: "application/json",
@@ -64,82 +68,43 @@ export const generateScript = async (topic: string, stylePreference: string): Pr
     },
   });
 
-  const text = response.text;
-  if (!text) throw new Error("스크립트 생성에 실패했습니다.");
-
   try {
-    const data = JSON.parse(text.replace(/```json/g, '').replace(/```/g, '').trim());
+    const data = JSON.parse(response.text.replace(/```json/g, '').replace(/```/g, '').trim());
+    // Verification: ensure we have exactly 5 scenes
     data.scenes = data.scenes.slice(0, 5);
     return data as ScriptData;
   } catch (e) {
-    throw new Error("스크립트 형식이 올바르지 않습니다.");
+    throw new Error("스크립트 일관성 생성 엔진에 오류가 발생했습니다. 다시 시도해주세요.");
   }
 };
 
-// 2. Generate Image for a Scene (Returns base64)
+// 2. Generate Image with Style & Anchored Content
 export const generateSceneImage = async (stylePrompt: string, scenePrompt: string): Promise<string> => {
   const ai = getAI();
-  // We place the style prompt first and use authoritative language to override model defaults
-  const fullPrompt = `[CORE STYLE: ${stylePrompt}]. [SCENE: ${scenePrompt}]. 
-  Vertical 9:16 aspect ratio. High fidelity, masterpiece. 
-  STRICT ADHERENCE TO CORE STYLE IS MANDATORY. NO DEVIATION.`;
+  
+  // Construct a prompt that places style first, then the anchored character/setting/action
+  const fullPrompt = `[VISUAL STYLE: ${stylePrompt}]. [SCENE CONTENT: ${scenePrompt}]. 
+  Aspect Ratio 9:16. Cinematic lighting, ultra-high resolution, masterpiece quality.
+  STRICT ADHERENCE: If the style is REALISTIC, you MUST produce a PHOTOGRAPH. No illustration, no painting, no 3D render look. 
+  Consistency check: Ensure the face and environment perfectly match the provided description.`;
   
   const response = await ai.models.generateContent({
     model: 'gemini-2.5-flash-image',
     contents: { parts: [{ text: fullPrompt }] },
     config: { 
-      imageConfig: { 
-        aspectRatio: "9:16"
-      } 
+        imageConfig: { 
+            aspectRatio: "9:16" 
+        } 
     }
   });
 
   for (const part of response.candidates?.[0]?.content?.parts || []) {
     if (part.inlineData) return part.inlineData.data;
   }
-  throw new Error("이미지 생성 실패");
+  throw new Error("이미지 생성 단계에서 오류가 발생했습니다.");
 };
 
-// 3. Generate Video (Veo) with Fallback Logic
-export const generateVeoVideo = async (imageBase64: string, prompt: string): Promise<string | null> => {
-  const aiWithKey = new GoogleGenAI({ apiKey: process.env.API_KEY });
-
-  try {
-    let operation = await aiWithKey.models.generateVideos({
-      model: 'veo-3.1-fast-generate-preview',
-      prompt: `Cinematic subtle movement, high quality rendering. ${prompt}`,
-      image: {
-        imageBytes: imageBase64,
-        mimeType: 'image/png',
-      },
-      config: {
-        numberOfVideos: 1,
-        resolution: '720p',
-        aspectRatio: '9:16'
-      }
-    });
-
-    while (!operation.done) {
-      await new Promise(resolve => setTimeout(resolve, 5000));
-      operation = await aiWithKey.operations.getVideosOperation({ operation: operation });
-    }
-
-    const videoUri = operation.response?.generatedVideos?.[0]?.video?.uri;
-    if (!videoUri) return null;
-
-    const videoRes = await fetch(`${videoUri}&key=${process.env.API_KEY}`);
-    if (!videoRes.ok) return null;
-    
-    const blob = await videoRes.blob();
-    return URL.createObjectURL(blob);
-
-  } catch (error: any) {
-    console.warn("Veo generation failed, falling back to static image.", error);
-    return null;
-  }
-};
-
-// 4. Generate Narration (TTS)
+// 3. Generate Audio Narration
 export const generateNarrationAudio = async (text: string): Promise<AudioBuffer> => {
   const ai = getAI();
   const response = await ai.models.generateContent({
@@ -147,25 +112,24 @@ export const generateNarrationAudio = async (text: string): Promise<AudioBuffer>
     contents: [{ parts: [{ text }] }],
     config: {
       responseModalities: [Modality.AUDIO],
-      speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
+      speechConfig: { 
+          voiceConfig: { 
+              prebuiltVoiceConfig: { voiceName: 'Kore' } 
+          } 
+      },
     },
   });
 
   const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
   if (!base64Audio) throw new Error("오디오 생성 실패");
-
+  
   const binaryString = atob(base64Audio);
   const bytes = new Uint8Array(binaryString.length);
   for (let i = 0; i < binaryString.length; i++) bytes[i] = binaryString.charCodeAt(i);
 
-  const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
-  return await decodePCM(bytes, audioContext);
-};
-
-async function decodePCM(data: Uint8Array, ctx: AudioContext): Promise<AudioBuffer> {
-  const dataInt16 = new Int16Array(data.buffer);
+  const ctx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+  const dataInt16 = new Int16Array(bytes.buffer);
   const buffer = ctx.createBuffer(1, dataInt16.length, 24000);
-  const channelData = buffer.getChannelData(0);
-  for (let i = 0; i < dataInt16.length; i++) channelData[i] = dataInt16[i] / 32768.0;
+  buffer.getChannelData(0).set(Array.from(dataInt16).map(v => v / 32768.0));
   return buffer;
-}
+};

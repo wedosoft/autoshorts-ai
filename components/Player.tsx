@@ -1,5 +1,6 @@
+
 import React, { useEffect, useRef, useState } from 'react';
-import { Play, Pause, RefreshCw, Film, Loader2, Download, Share2, Check } from 'lucide-react';
+import { Play, Pause, RefreshCw, Film, Loader2, Video, Check, Settings, X, Volume2, ArrowRightLeft } from 'lucide-react';
 
 interface Props {
   videoUrls: string[];
@@ -9,17 +10,31 @@ interface Props {
 }
 
 const BGM_URL = "https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3?filename=lofi-study-112778.mp3";
+const TRANSITION_DURATION = 0.8; // Seconds
+
+type TransitionType = 'dissolve' | 'slide' | 'zoom';
 
 export const Player: React.FC<Props> = ({ videoUrls, audioBuffer, script, onReset }) => {
   const [isPlaying, setIsPlaying] = useState(false);
-  const [currentVideoIndex, setCurrentVideoIndex] = useState(0);
+  const [currentIndex, setCurrentIndex] = useState(0);
   const [isExporting, setIsExporting] = useState(false);
+  const [exportProgress, setExportProgress] = useState(0);
   const [exported, setExported] = useState(false);
-  const videoRef = useRef<HTMLVideoElement>(null);
+
+  // Settings State
+  const [showSettings, setShowSettings] = useState(false);
+  const [bgmVolume, setBgmVolume] = useState(0.1);
+  const [narrationVolume, setNarrationVolume] = useState(1.0);
+  const [transitionType, setTransitionType] = useState<TransitionType>('dissolve');
+
   const audioContextRef = useRef<AudioContext | null>(null);
   const narrationSourceRef = useRef<AudioBufferSourceNode | null>(null);
   const bgmSourceRef = useRef<AudioBufferSourceNode | null>(null);
   const [bgmBuffer, setBgmBuffer] = useState<AudioBuffer | null>(null);
+
+  // Gain Nodes Refs
+  const narrationGainRef = useRef<GainNode | null>(null);
+  const bgmGainRef = useRef<GainNode | null>(null);
 
   useEffect(() => {
     const loadBgm = async () => {
@@ -36,29 +51,27 @@ export const Player: React.FC<Props> = ({ videoUrls, audioBuffer, script, onRese
     return () => stopAudio();
   }, []);
 
-  const isImage = (url: string) => url.startsWith('data:image');
+  useEffect(() => {
+    if (narrationGainRef.current) narrationGainRef.current.gain.value = narrationVolume;
+    if (bgmGainRef.current) bgmGainRef.current.gain.value = bgmVolume;
+  }, [narrationVolume, bgmVolume]);
 
   useEffect(() => {
-    if (isPlaying && !isImage(videoUrls[currentVideoIndex]) && videoRef.current) {
-        videoRef.current.play().catch(() => {});
-    } else if (isPlaying && isImage(videoUrls[currentVideoIndex])) {
-        // High quality images are timed to match typical narration (approx 7s)
-        const timer = setTimeout(() => {
-            handleMediaEnded();
-        }, 7000);
-        return () => clearTimeout(timer);
+    if (isPlaying && audioBuffer) {
+      const sceneDuration = (audioBuffer.duration / videoUrls.length) * 1000;
+      const interval = setInterval(() => {
+        setCurrentIndex(prev => {
+          if (prev >= videoUrls.length - 1) {
+            setIsPlaying(false);
+            stopAudio();
+            return 0;
+          }
+          return prev + 1;
+        });
+      }, sceneDuration);
+      return () => clearInterval(interval);
     }
-  }, [currentVideoIndex, isPlaying]);
-
-  const handleMediaEnded = () => {
-    const nextIndex = (currentVideoIndex + 1) % videoUrls.length;
-    if (nextIndex === 0) {
-        setIsPlaying(false);
-        stopAudio();
-    } else {
-        setCurrentVideoIndex(nextIndex);
-    }
-  };
+  }, [isPlaying, videoUrls.length, audioBuffer]);
 
   const playAudio = () => {
     if (!audioBuffer) return;
@@ -67,137 +80,315 @@ export const Player: React.FC<Props> = ({ videoUrls, audioBuffer, script, onRese
     
     const narrSource = ctx.createBufferSource();
     narrSource.buffer = audioBuffer;
-    narrSource.connect(ctx.destination);
+    const narrGain = ctx.createGain();
+    narrGain.gain.value = narrationVolume;
+    narrSource.connect(narrGain);
+    narrGain.connect(ctx.destination);
+    
+    narrationSourceRef.current = narrSource;
+    narrationGainRef.current = narrGain;
     
     if (bgmBuffer) {
       const bgmSource = ctx.createBufferSource();
       bgmSource.buffer = bgmBuffer;
       bgmSource.loop = true;
       const bgmGain = ctx.createGain();
-      bgmGain.gain.value = 0.08;
+      bgmGain.gain.value = bgmVolume;
       bgmSource.connect(bgmGain);
       bgmGain.connect(ctx.destination);
+      
       bgmSource.start(0);
       bgmSourceRef.current = bgmSource;
+      bgmGainRef.current = bgmGain;
     }
 
-    narrSource.onended = () => {
-        setIsPlaying(false);
-        stopAudio();
-        setCurrentVideoIndex(0);
-    };
     narrSource.start(0);
-    narrationSourceRef.current = narrSource;
   };
 
   const stopAudio = () => {
     narrationSourceRef.current?.stop();
     bgmSourceRef.current?.stop();
+    audioContextRef.current?.close();
   };
 
   const togglePlay = () => {
     if (isPlaying) {
       stopAudio();
-      videoRef.current?.pause();
       setIsPlaying(false);
     } else {
-      if (currentVideoIndex === 0) playAudio();
+      if (currentIndex === 0) playAudio();
       setIsPlaying(true);
     }
   };
 
   const handleExport = async () => {
+    if (isExporting || !audioBuffer) return;
     setIsExporting(true);
-    try {
-      // 1. Download Script as Text
-      const scriptBlob = new Blob([script], { type: 'text/plain' });
-      const scriptUrl = URL.createObjectURL(scriptBlob);
-      const scriptLink = document.createElement('a');
-      scriptLink.href = scriptUrl;
-      scriptLink.download = 'script.txt';
-      scriptLink.click();
+    setExportProgress(0);
 
-      // 2. Download Media Assets
-      for (let i = 0; i < videoUrls.length; i++) {
-        const url = videoUrls[i];
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = `scene_${i + 1}.${isImage(url) ? 'png' : 'mp4'}`;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        // Small delay to prevent browser from blocking multiple downloads
-        await new Promise(r => setTimeout(r, 300));
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = 720;
+      canvas.height = 1280;
+      const ctx = canvas.getContext('2d')!;
+      
+      const stream = canvas.captureStream(30); 
+      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const dest = audioCtx.createMediaStreamDestination();
+      
+      const narrNode = audioCtx.createBufferSource();
+      narrNode.buffer = audioBuffer;
+      const narrGain = audioCtx.createGain();
+      narrGain.gain.value = narrationVolume;
+      narrNode.connect(narrGain);
+      narrGain.connect(dest);
+      
+      if (bgmBuffer) {
+        const bgmNode = audioCtx.createBufferSource();
+        bgmNode.buffer = bgmBuffer;
+        const bgmGain = audioCtx.createGain();
+        bgmGain.gain.value = bgmVolume;
+        bgmNode.connect(bgmGain);
+        bgmGain.connect(dest);
+        bgmNode.start(0);
       }
 
-      setExported(true);
-      setTimeout(() => setExported(false), 3000);
+      const mimeTypes = [
+        'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+        'video/mp4;codecs=avc1',
+        'video/mp4',
+        'video/webm;codecs=h264',
+        'video/webm'
+      ];
+      const selectedMime = mimeTypes.find(m => MediaRecorder.isTypeSupported(m)) || 'video/webm';
+      
+      const recorder = new MediaRecorder(new MediaStream([...stream.getVideoTracks(), ...dest.stream.getAudioTracks()]), { 
+        mimeType: selectedMime, 
+        videoBitsPerSecond: 8000000 
+      });
+
+      const chunks: Blob[] = [];
+      recorder.ondataavailable = (e) => chunks.push(e.data);
+      recorder.onstop = () => {
+        const blob = new Blob(chunks, { type: selectedMime });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        const ext = selectedMime.includes('mp4') ? 'mp4' : 'webm';
+        a.download = `autoshorts_${transitionType}.${ext}`;
+        a.click();
+        setIsExporting(false);
+        setExported(true);
+        setTimeout(() => setExported(false), 3000);
+      };
+
+      const images: HTMLImageElement[] = [];
+      for (const url of videoUrls) {
+        const img = new Image();
+        img.src = url;
+        await new Promise(resolve => img.onload = resolve);
+        images.push(img);
+      }
+
+      recorder.start();
+      narrNode.start(0);
+
+      const sceneDuration = audioBuffer.duration / videoUrls.length;
+      const totalDuration = audioBuffer.duration;
+      const recordingStartTime = Date.now();
+
+      const renderFrame = async () => {
+        const elapsed = (Date.now() - recordingStartTime) / 1000;
+        if (elapsed >= totalDuration) {
+          recorder.stop();
+          audioCtx.close();
+          return;
+        }
+
+        setExportProgress(Math.round((elapsed / totalDuration) * 100));
+        const sceneIndex = Math.floor(elapsed / sceneDuration);
+        const sceneProgress = elapsed % sceneDuration;
+        
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        // Helper for Ken Burns effect scaling
+        const drawImage = (img: HTMLImageElement, progress: number, alpha: number = 1, tx: number = 0, scaleMult: number = 1) => {
+          const kenBurnsScale = 1 + progress * 0.05; 
+          const finalScale = kenBurnsScale * scaleMult;
+          ctx.save();
+          ctx.globalAlpha = alpha;
+          ctx.translate(canvas.width / 2 + tx, canvas.height / 2);
+          ctx.scale(finalScale, finalScale);
+          ctx.drawImage(img, -canvas.width / 2, -canvas.height / 2, canvas.width, canvas.height);
+          ctx.restore();
+        };
+
+        if (sceneIndex < images.length) {
+          const p = sceneProgress / TRANSITION_DURATION;
+          const isTransitioning = sceneIndex > 0 && sceneProgress < TRANSITION_DURATION;
+
+          if (isTransitioning) {
+            if (transitionType === 'slide') {
+              // Slide Left
+              drawImage(images[sceneIndex - 1], 1, 1, -canvas.width * p);
+              drawImage(images[sceneIndex], sceneProgress / sceneDuration, 1, canvas.width * (1 - p));
+            } else if (transitionType === 'zoom') {
+              // Zoom In/Cross Fade
+              drawImage(images[sceneIndex - 1], 1, 1 - p);
+              // Incoming image starts zoomed in (1.5x) and scales down to normal
+              const zoomScale = 1.5 - (0.5 * p); 
+              drawImage(images[sceneIndex], sceneProgress / sceneDuration, p, 0, zoomScale);
+            } else {
+              // Dissolve (Default)
+              drawImage(images[sceneIndex - 1], 1, 1);
+              drawImage(images[sceneIndex], sceneProgress / sceneDuration, p);
+            }
+          } else {
+            drawImage(images[sceneIndex], sceneProgress / sceneDuration, 1);
+          }
+        }
+        requestAnimationFrame(renderFrame);
+      };
+      renderFrame();
+
     } catch (e) {
-      console.error("Export failed", e);
-    } finally {
+      console.error("Export Error:", e);
       setIsExporting(false);
     }
   };
 
-  const handleShare = async () => {
-    if (navigator.share) {
-      try {
-        await navigator.share({
-          title: 'AutoShorts AI Video',
-          text: script.slice(0, 100) + '...',
-          url: window.location.href,
-        });
-      } catch (e) { console.error(e); }
+  // Helper to generate preview classes based on transition type
+  const getPreviewClasses = (index: number) => {
+    const isCurrent = index === currentIndex;
+    const isPast = index < currentIndex;
+    
+    // Base styles
+    let classes = "absolute inset-0 w-full h-full object-cover transition-all ease-in-out ";
+    
+    // Timing
+    // For 'slide' we need faster transitions for the movement, 'dissolve' can be slower/smoother
+    const duration = isPlaying ? (transitionType === 'slide' ? 'duration-700' : 'duration-[5000ms]') : 'duration-700';
+    classes += duration;
+
+    if (transitionType === 'slide') {
+      classes += ' opacity-100'; // Always visible opacity-wise for slide
+      if (isCurrent) classes += ' translate-x-0 z-10';
+      else if (isPast) classes += ' -translate-x-full z-0';
+      else classes += ' translate-x-full z-0';
+    } else if (transitionType === 'zoom') {
+      if (isCurrent) classes += ' opacity-100 scale-100 z-10';
+      else classes += ' opacity-0 scale-150 z-0'; // Fades out while zoomed in
+    } else {
+      // Dissolve
+      classes += isCurrent ? ' opacity-100 scale-110' : ' opacity-0 scale-100';
     }
+
+    return classes;
   };
 
-  const currentMediaUrl = videoUrls[currentVideoIndex];
-
   return (
-    <div className="flex flex-col md:flex-row gap-12 w-full max-w-5xl p-6 bg-white/5 backdrop-blur-3xl border border-white/10 rounded-[3rem] shadow-2xl animate-scale-in">
-      {/* Phone Frame */}
-      <div className="mx-auto md:mx-0 relative w-[320px] h-[570px] bg-black rounded-[3.5rem] border-[10px] border-white/10 shadow-2xl overflow-hidden shrink-0">
-        {currentMediaUrl ? (
-          isImage(currentMediaUrl) ? (
-              <div className="w-full h-full overflow-hidden relative bg-[#001219]">
-                  <img 
-                    src={currentMediaUrl} 
-                    className={`w-full h-full object-cover transition-all duration-[7500ms] ease-out ${isPlaying ? 'scale-150 translate-x-4 -translate-y-4' : 'scale-110 translate-x-0 translate-y-0'}`}
-                    style={{ filter: 'brightness(1.1) contrast(1.05)' }}
-                  />
-                  <div className="absolute inset-0 bg-gradient-to-b from-transparent via-transparent to-black/60"></div>
+    <div className="flex flex-col md:flex-row gap-12 w-full max-w-5xl p-6 bg-white/5 backdrop-blur-3xl border border-white/10 rounded-[3rem] shadow-2xl animate-scale-in relative">
+      
+      {/* Settings Modal */}
+      {showSettings && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-[100] flex items-center justify-center p-4">
+          <div className="bg-[#001219] border border-cyan-500/30 rounded-3xl p-8 w-full max-w-md shadow-2xl animate-scale-in relative">
+            <button 
+              onClick={() => setShowSettings(false)}
+              className="absolute top-4 right-4 text-white/50 hover:text-white transition-colors"
+            >
+              <X size={24} />
+            </button>
+            
+            <h3 className="text-2xl font-bold text-white mb-8 flex items-center gap-3">
+              <Settings className="text-cyan-400" /> Export Settings
+            </h3>
+
+            <div className="space-y-8">
+              <div className="space-y-3">
+                <label className="flex justify-between text-white/90 font-medium">
+                  <div className="flex items-center gap-2"><Volume2 size={18} className="text-cyan-400"/> Narration Volume</div>
+                  <span className="text-cyan-400 font-bold">{Math.round(narrationVolume * 100)}%</span>
+                </label>
+                <input 
+                  type="range" min="0" max="2" step="0.1" 
+                  value={narrationVolume} onChange={(e) => setNarrationVolume(parseFloat(e.target.value))}
+                  className="w-full h-2 bg-white/10 rounded-lg appearance-none cursor-pointer accent-cyan-500 hover:bg-white/20 transition-colors"
+                />
               </div>
-          ) : (
-              <video 
-                key={currentMediaUrl}
-                ref={videoRef}
-                src={currentMediaUrl}
-                className="w-full h-full object-cover"
-                muted
-                playsInline
-                onEnded={handleMediaEnded}
-              />
-          )
-        ) : (
-          <div className="w-full h-full flex items-center justify-center bg-[#001219]">
-             <Loader2 className="animate-spin text-cyan-500" />
+
+              <div className="space-y-3">
+                 <label className="flex justify-between text-white/90 font-medium">
+                  <div className="flex items-center gap-2"><Volume2 size={18} className="text-purple-400"/> BGM Volume</div>
+                  <span className="text-purple-400 font-bold">{Math.round(bgmVolume * 100)}%</span>
+                </label>
+                 <input 
+                  type="range" min="0" max="1" step="0.05" 
+                  value={bgmVolume} onChange={(e) => setBgmVolume(parseFloat(e.target.value))}
+                  className="w-full h-2 bg-white/10 rounded-lg appearance-none cursor-pointer accent-purple-500 hover:bg-white/20 transition-colors"
+                />
+              </div>
+
+              <div className="space-y-3">
+                <label className="flex justify-between text-white/90 font-medium">
+                  <div className="flex items-center gap-2"><ArrowRightLeft size={18} className="text-emerald-400"/> Transition Effect</div>
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  {(['dissolve', 'slide', 'zoom'] as TransitionType[]).map((t) => (
+                    <button
+                      key={t}
+                      onClick={() => setTransitionType(t)}
+                      className={`py-3 rounded-xl text-sm font-bold capitalize transition-all border ${
+                        transitionType === t 
+                        ? 'bg-emerald-500/20 border-emerald-400 text-emerald-300' 
+                        : 'bg-white/5 border-white/10 text-white/50 hover:bg-white/10'
+                      }`}
+                    >
+                      {t}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <button 
+              onClick={() => setShowSettings(false)}
+              className="w-full mt-10 py-4 bg-gradient-to-r from-cyan-600 to-blue-600 rounded-xl text-white font-bold text-lg hover:from-cyan-500 hover:to-blue-500 transition-all shadow-lg"
+            >
+              Confirm
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Viewport */}
+      <div className="mx-auto md:mx-0 relative w-[320px] h-[570px] bg-black rounded-[3.5rem] border-[10px] border-white/10 shadow-2xl overflow-hidden shrink-0 z-0">
+        <div className="w-full h-full relative overflow-hidden">
+          {videoUrls.map((url, index) => (
+            <img 
+              key={index}
+              src={url} 
+              className={getPreviewClasses(index)}
+              style={{ filter: 'brightness(1.05)' }}
+            />
+          ))}
+          <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-transparent pointer-events-none z-20"></div>
+        </div>
+
+        {isExporting && (
+          <div className="absolute inset-0 bg-black/90 backdrop-blur-lg flex flex-col items-center justify-center p-8 text-center space-y-6 z-50">
+              <div className="w-20 h-20 border-4 border-cyan-500/20 border-t-cyan-500 rounded-full animate-spin"></div>
+              <div>
+                <h4 className="text-white font-black text-xl mb-2 uppercase tracking-tighter">Exporting</h4>
+                <p className="text-cyan-400 font-bold text-2xl">{exportProgress}%</p>
+                <p className="text-[10px] text-white/40 mt-4 leading-relaxed uppercase tracking-widest">Applying {transitionType} transition & H.264 encoding</p>
+              </div>
           </div>
         )}
 
-        <div className="absolute bottom-0 left-0 w-full p-8 bg-gradient-to-t from-black via-black/40 to-transparent pt-20 pointer-events-none">
-          <div className="flex items-center gap-2 mb-4">
-             <div className="bg-cyan-500 px-3 py-1 rounded-full text-[10px] font-black text-white shadow-lg">
-                SCENE {currentVideoIndex + 1} / {videoUrls.length}
-             </div>
-             {currentMediaUrl && isImage(currentMediaUrl) && (
-                 <div className="bg-white/10 backdrop-blur-md border border-white/20 px-3 py-1 rounded-full text-[10px] font-bold text-cyan-200 uppercase tracking-widest">Cinematic Image</div>
-             )}
-          </div>
-        </div>
-
-        {!isPlaying && (
-          <div onClick={togglePlay} className="absolute inset-0 bg-black/40 flex items-center justify-center cursor-pointer group">
-            <div className="w-24 h-24 rounded-full bg-white/10 backdrop-blur-2xl flex items-center justify-center border border-white/30 group-hover:scale-110 transition-transform shadow-2xl">
+        {!isPlaying && !isExporting && (
+          <div onClick={togglePlay} className="absolute inset-0 bg-black/40 flex items-center justify-center cursor-pointer group z-40">
+            <div className="w-24 h-24 rounded-full bg-white/10 backdrop-blur-2xl flex items-center justify-center border border-white/30 group-hover:scale-110 transition-transform">
                 <Play fill="white" className="ml-1 text-white" size={40} />
             </div>
           </div>
@@ -206,61 +397,55 @@ export const Player: React.FC<Props> = ({ videoUrls, audioBuffer, script, onRese
 
       {/* Info & Controls */}
       <div className="flex-1 flex flex-col justify-center space-y-8">
-        <div className="flex justify-between items-start">
-          <div>
-            <h2 className="text-4xl font-black text-white mb-4 leading-tight uppercase">Rendering Done</h2>
-            <p className="text-cyan-100/60 leading-relaxed word-keep-all text-lg">
-              SaaS 하이브리드 엔진이 모든 자산을 생성했습니다. <br/>
-              이제 비디오를 저장하거나 친구들과 공유해보세요.
-            </p>
-          </div>
-          <button 
-            onClick={handleShare}
-            className="p-4 rounded-full bg-white/5 border border-white/10 text-cyan-300 hover:bg-white/10 transition-all active:scale-95"
-          >
-            <Share2 size={24} />
-          </button>
+        <div>
+          <h2 className="text-4xl font-black text-white mb-4 uppercase leading-tight tracking-tight">Cinematic Edit</h2>
+          <p className="text-cyan-100/60 text-lg leading-relaxed">
+            5개 장면의 <b>{transitionType.toUpperCase()} Transition</b> 효과가 적용되었습니다.<br/>
+            전문가가 편집한 듯한 쇼츠를 지금 다운로드하세요.
+          </p>
         </div>
 
-        <div className="bg-white/5 p-8 rounded-[2rem] border border-white/10 backdrop-blur-2xl max-h-72 overflow-y-auto shadow-inner">
-            <h3 className="text-cyan-400 font-black mb-4 flex items-center gap-2 text-sm uppercase tracking-widest border-b border-white/10 pb-2">
+        <div className="bg-white/5 p-8 rounded-[2rem] border border-white/10 backdrop-blur-2xl max-h-72 overflow-y-auto">
+            <h3 className="text-cyan-400 font-black mb-4 flex items-center gap-2 text-sm uppercase border-b border-white/10 pb-2">
               <Film size={18}/> Story Script
             </h3>
-            <div className="text-white/80 text-base leading-relaxed whitespace-pre-wrap font-medium">{script}</div>
+            <div className="text-white/80 leading-relaxed whitespace-pre-wrap text-sm italic">"{script}"</div>
         </div>
 
-        <div className="flex flex-col gap-4">
-            <div className="flex gap-4">
-                <button 
-                  onClick={togglePlay} 
-                  className="flex-[3] py-5 rounded-2xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-black text-xl transition-all flex items-center justify-center gap-3 shadow-xl active:scale-[0.98]"
-                >
-                    {isPlaying ? <Pause size={28}/> : <Play size={28}/>} {isPlaying ? 'PAUSE' : 'PLAY VIDEO'}
-                </button>
-                <button 
-                  onClick={handleExport} 
-                  disabled={isExporting}
-                  className={`flex-[1.5] py-5 rounded-2xl border flex items-center justify-center gap-2 font-bold transition-all shadow-lg active:scale-[0.98] ${
-                    exported 
-                    ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-400' 
-                    : 'bg-white/10 border-white/10 text-white hover:bg-white/20'
-                  }`}
-                >
-                    {isExporting ? <Loader2 className="animate-spin" size={24}/> : exported ? <Check size={24}/> : <Download size={24}/>}
-                    {exported ? 'DONE' : 'EXPORT'}
-                </button>
-                <button 
-                  onClick={onReset} 
-                  className="flex-1 py-5 rounded-2xl border border-white/10 bg-white/5 text-white font-bold transition-all hover:bg-white/10 shadow-lg active:scale-[0.98]"
-                >
-                  <RefreshCw className="mx-auto" size={28}/>
-                </button>
-            </div>
-            <div className="flex items-center justify-center gap-6 mt-4 opacity-40">
-                <span className="text-[10px] text-white font-bold uppercase tracking-widest">Hybrid V3.5</span>
-                <span className="text-[10px] text-white font-bold uppercase tracking-widest">Gemini 2.5 Pro</span>
-                <span className="text-[10px] text-white font-bold uppercase tracking-widest">Veo 3.1 Fast</span>
-            </div>
+        <div className="flex gap-4">
+            <button 
+              onClick={togglePlay} 
+              disabled={isExporting}
+              className="flex-[1] py-5 rounded-2xl bg-white/5 border border-white/10 hover:bg-white/10 text-white transition-all flex items-center justify-center disabled:opacity-20"
+            >
+                {isPlaying ? <Pause size={28}/> : <Play size={28}/>}
+            </button>
+            <button 
+              onClick={handleExport} 
+              disabled={isExporting}
+              className="flex-[4] py-5 rounded-2xl bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white font-black text-xl transition-all flex items-center justify-center gap-3 shadow-xl disabled:opacity-50"
+            >
+                {isExporting ? <Loader2 className="animate-spin" size={28}/> : exported ? <Check size={28}/> : <Video size={28}/>}
+                {isExporting ? `RENDERING ${exportProgress}%` : exported ? 'SAVED!' : 'DOWNLOAD MP4'}
+            </button>
+            <button 
+              onClick={() => setShowSettings(true)} 
+              disabled={isExporting}
+              className="flex-1 py-5 rounded-2xl border border-white/10 bg-white/5 text-white hover:bg-white/10 transition-all flex items-center justify-center disabled:opacity-20"
+            >
+              <Settings size={28}/>
+            </button>
+            <button 
+              onClick={onReset} 
+              disabled={isExporting}
+              className="flex-1 py-5 rounded-2xl border border-white/10 bg-white/5 text-white hover:bg-white/10 transition-all disabled:opacity-20"
+            >
+              <RefreshCw className="mx-auto" size={28}/>
+            </button>
+        </div>
+        <div className="flex justify-center gap-6 opacity-40">
+           <span className="text-[10px] text-white font-bold uppercase tracking-widest border border-white/20 px-2 py-1 rounded">H.264 Encoding</span>
+           <span className="text-[10px] text-white font-bold uppercase tracking-widest border border-white/20 px-2 py-1 rounded">QuickTime Ready</span>
         </div>
       </div>
     </div>
