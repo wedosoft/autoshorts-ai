@@ -1,31 +1,56 @@
+
 <!DOCTYPE html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>AutoShorts AI</title>
+    <title>AutoShorts AI - Oceanic Edition</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <style>
       body {
-        font-family: 'Inter', sans-serif;
-        background-color: #09090b;
+        font-family: 'Plus Jakarta Sans', sans-serif;
+        background: radial-gradient(circle at top right, #0077b6 0%, #001219 100%);
+        background-attachment: fixed;
         color: #e4e4e7;
+        overflow-x: hidden;
       }
-      /* Custom Scrollbar */
+      /* Oceanic Scrollbar */
       ::-webkit-scrollbar {
-        width: 8px;
-        height: 8px;
+        width: 10px;
       }
       ::-webkit-scrollbar-track {
-        background: #18181b; 
+        background: #001219; 
       }
       ::-webkit-scrollbar-thumb {
-        background: #3f3f46; 
-        border-radius: 4px;
+        background: linear-gradient(to bottom, #00b4d8, #0077b6); 
+        border-radius: 20px;
+        border: 2px solid #001219;
       }
       ::-webkit-scrollbar-thumb:hover {
-        background: #52525b; 
+        background: #90e0ef; 
+      }
+      /* Bubble Background Effect */
+      .ocean-bg {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        z-index: -1;
+        overflow: hidden;
+      }
+      .bubble {
+        position: absolute;
+        bottom: -100px;
+        background: rgba(255, 255, 255, 0.1);
+        border-radius: 50%;
+        animation: rise 15s infinite ease-in;
+      }
+      @keyframes rise {
+        0% { transform: translateY(0) scale(1); opacity: 0; }
+        50% { opacity: 0.3; }
+        100% { transform: translateY(-120vh) scale(1.5); opacity: 0; }
       }
     </style>
   <script type="importmap">
@@ -41,6 +66,13 @@
 </script>
 </head>
   <body>
+    <div class="ocean-bg">
+      <div class="bubble" style="left: 10%; width: 40px; height: 40px; animation-delay: 0s;"></div>
+      <div class="bubble" style="left: 30%; width: 20px; height: 20px; animation-delay: 4s;"></div>
+      <div class="bubble" style="left: 70%; width: 60px; height: 60px; animation-delay: 8s;"></div>
+      <div class="bubble" style="left: 50%; width: 30px; height: 30px; animation-delay: 2s;"></div>
+      <div class="bubble" style="left: 90%; width: 45px; height: 45px; animation-delay: 6s;"></div>
+    </div>
     <div id="root"></div>
   </body>
 </html>
