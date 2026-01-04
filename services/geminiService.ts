@@ -3,7 +3,11 @@ import { GoogleGenAI, Type, Modality } from "@google/genai";
 import { ScriptData, Scene } from "../types";
 
 const getAI = () => {
-  return new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const apiKey = process.env.API_KEY || process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error('GEMINI_API_KEY가 설정되지 않았습니다. .env 파일에 GEMINI_API_KEY를 설정해주세요.');
+  }
+  return new GoogleGenAI({ apiKey });
 };
 
 // 1. Generate Script
